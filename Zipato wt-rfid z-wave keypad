@@ -1,8 +1,12 @@
 /**
- *  Copyright 2017 SEAN BLANCHFIELD - PORTED TO HUBITAT BY MARK HUTCHINGS
+ *  Copyright 2019 MARK HUTCHINGS
  *
+ *  Beta test version - Please contact me with any bugs etc either on gitHub or Hubitat community - Username: mhutchy
  *
- * Additional code for 'Last Set By User', 'User Personalisation in Preferences' and 'Enable webCoRE Notifications' by Inpier 2017-04-11.
+ *  Ported from SmartThings device handler written by SEAN BLANCHFIELD
+ *
+ *  With thanks to hubitat community members: cometfish and Mike Maxwell for help with the code
+ *  Thanks to Roy Knowles for being my guinea pig
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -26,13 +30,14 @@ import hubitat.zwave.commands.associationv2.*
 import hubitat.zwave.commands.batteryv1.*
 
 metadata {
-	definition (name: "Z-Wave Zipato Keypad (ported)", namespace: "mhutchy", author: "Mark Hutchings") {
+	definition (name: "Zipato Z-Wave RFID Keypad", namespace: "mhutchy", author: "Mark Hutchings") {
     	capability "Actuator"
     	capability "Sensor"
     	capability "Battery"
         capability "Configuration"
         capability "Switch"
         capability "Refresh"
+		capability "PushableButton"
         
         
         command "associate1"
@@ -281,22 +286,7 @@ def getCommand (cmd) {
 	return command
 }
 
-/*def getUserCode (payload) {
-		
-	def code = "["
-	def iMax = 36
-		for (int i = 6; i < iMax; i+=3){
-		def payloadByte = (payload[i..(i+1)])
-			def  payloadInt = Integer.parseInt(payloadByte,16)
-			code += payloadInt
-			if (i < (iMax - 3)){
-				code += ", "
-			}
-	}
-	code += "]"
-	debug "Code is $code"
-	return code
-}*/
+
 
 def getUserCode (payload) {
 	debug ("Payload = $payload")
@@ -317,7 +307,9 @@ def getUserCode (payload) {
 def convertCode (code) {
 	debug "Converting code $code"
 	//code = "256"
-	def newCode = "0x"
+	//def newCode = "0x"
+	def newCode = ""
+	
 	def indexStart = 0
 	def indexEnd = code.indexOf(',')
 	for (int i = 0; i < 10; i++){
@@ -430,11 +422,25 @@ private goToSleep(def cmds){
 def zwaveEvent(hubitat.zwave.commands.alarmv2.AlarmReport cmd) {
 	// COMMAND_CLASS_ALARM_V2 0X71
 	def dateStamp = getDateStamp()
-    def userNumber = cmd.eventParameter.toString().substring(1,2).toInteger()
-    def userName = [who1, who2, who3, who4, who5, who6, who7, who8, who9][userNumber - 1]
-    if(userName == null){
-    	userName = "User $userNumber"
-    }
+	debug ("cmd.eventParameter:${cmd.eventParameter.toString()} zwaveAlarmEvent:${cmd.zwaveAlarmEvent} zwaveAlarmType:${cmd.zwaveAlarmType}")
+	if (cmd.zwaveAlarmType == 7){
+		//Device fault detected - need to find event codes for the faults
+		log.warn "WARNING - Device fault detected"
+		if (cmd.zwaveAlarmEvent == 3){
+			//Tamper switch operated
+			log.warn "WARNING - tamper switch operated"
+		}
+	}
+	if ((cmd.eventParameter.toString()) == "[]") {
+		debug "no event parameter"
+	}
+	else{
+    	def userNumber = cmd.eventParameter.toString().substring(1,2).toInteger()
+    	def userName = [who1, who2, who3, who4, who5, who6, who7, who8, who9][userNumber - 1]
+    	if(userName == null){
+    		userName = "User $userNumber"
+    	}
+	}
     def result = []
 	if (cmd.zwaveAlarmType == 6) {	
        
@@ -446,6 +452,8 @@ def zwaveEvent(hubitat.zwave.commands.alarmv2.AlarmReport cmd) {
                 sendEvent(name:"webCoREPush", value: pushNotifications?"Yes":"No")
                 sendEvent(name:"webCoRESMS", value: smsNotifications?"Yes":"No")
                 sendEvent(name:"lastsetby", value: "$userName")
+		   		sendEvent(name: "pushed", value: "2")
+		   		runIn (5,releaseButtons)
                 result << createEvent(name:"switch", value: "on")
             	break
 			case 6:
@@ -455,6 +463,8 @@ def zwaveEvent(hubitat.zwave.commands.alarmv2.AlarmReport cmd) {
                 sendEvent(name:"webCoREPush", value: pushNotifications?"Yes":"No")
                 sendEvent(name:"webCoRESMS", value: smsNotifications?"Yes":"No")
                 sendEvent(name:"lastsetby", value: "$userName")
+		  		sendEvent(name: "pushed", value: "1")
+		   		runIn (5,releaseButtons)
  			    result << createEvent(name:"switch", value: "off")                
                 break
 			default:
@@ -466,6 +476,12 @@ def zwaveEvent(hubitat.zwave.commands.alarmv2.AlarmReport cmd) {
     goToSleep(result)
 	return result
 }
+
+def releaseButtons () {
+	sendEvent(name: "pushed", value: "0")
+	
+}
+
 
 def zwaveEvent(hubitat.zwave.commands.usercodev1.UserCodeReport cmd) {
 	// Zipato COMMAND_CLASS_USER_CODE_V1: 0X63
@@ -527,14 +543,17 @@ private associate(def userNumber){
         
         info "Associating tag number $userNumber with code ${state.lastUnrecognisedCode}"
 		
-		// use these two lines to get the code of the keyfob in the logger
-		def newCode = convertCode (state.lastUnrecognisedCode)
-		debug "newCode = $newCode"
-		
 		// then use these two lines hardcoding the code of your keyfob
-		//debug "newCode = ${convertCode (state.lastUnrecognisedCode)}"
-		//def newCode = 0x8f153e0c720001040000
+		debug "newCode = ${convertCode (state.lastUnrecognisedCode)}"
 		
+		//def newCode = 0x8f9b4828855001040000
+		//log.debug "Raw hex hardCoded = $newCode"
+		
+		newCode = convertCode (state.lastUnrecognisedCode)
+		log.debug "Code from convert routine = $newCode"
+		def newCodeRaw = new BigInteger(newCode, 16)
+		debug ("newCodeRaw = $newCodeRaw")
+
 		          
 	
 		     def cmd = [
@@ -542,7 +561,7 @@ private associate(def userNumber){
             0x01, // USER_CODE SET command
             userNumber,
             UserCodeSet.USER_ID_STATUS_OCCUPIED]
-        cmd += newCode
+        cmd += newCodeRaw
         cmd = cmd.collect { String.format("%02x", it).toUpperCase() }.join('')
         requests << cmd
   
