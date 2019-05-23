@@ -1,0 +1,266 @@
+/**
+ *  Sonoff Basic
+ *
+ *  Copyright 2019 Mark Hutchings
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS"BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
+ *
+ */
+metadata {
+	definition (name: "Sonoff Basic - Tasmota", namespace: "mhutchy", author: "Mark Hutchings", mnmn: "SmartThings", vid: "generic-switch") {
+		capability "Actuator"
+		capability "Momentary"
+		capability "Switch"
+        capability "Refresh"
+        
+        attribute "FriendlyName", "string"
+        attribute "Uptime", "string"
+        attribute "Version", "string"
+        attribute "Hostname", "string"
+        attribute "Mac", "string"
+        attribute "ip", "string"
+        attribute "authentication", "string"
+                 
+        
+        command "reload"
+        command "updateStatus"
+	}
+    
+ 
+ 
+ 
+	preferences {
+ 
+    	section ("Authentication, user is hardcoded as admin"){   
+     	input "password", "string", title: "Password (if used)", multiple: false, required: false
+         }
+
+		section ("Device preferences"){
+
+ 		input(name: "setName", type: "bool", title: "Change Sonoff's hostName and friendly name to match Device Name", displayDuringSetup: true, required: false)
+        input(name: "stopBlink", type: "bool", title: "Disable LED blink when Sonoff WiFi low", displayDuringSetup: true, required: false)
+    	
+        
+ 		input(name: "detailedLog", type: "bool", title: "Detailed logging", description: "Will output step by step logging for debugging", displayDuringSetup: true, required: true)
+        
+      
+        input(name: "2R", type: "bool", title: "2R", description: "If this Sonoff is a 2 output device then the option below should be enabled, this device handler will opperate the 1st relay, a 2R handler is need for the 2nd relay", displayDuringSetup: true, required: false)
+
+		}
+	}
+
+
+}
+
+// parse events into attributes
+
+
+  //  Sonoff doesn't send any data so parse does not work
+
+
+
+// handle commands
+
+def updated(){
+	log.debug "Updated"
+	updateDetails()
+    initialise()
+}
+
+
+def installed(){
+	log.debug "Installed"
+	updateDetails()
+    initialise()
+}
+
+
+
+def initialise(){
+	log.debug "initialising"
+  
+
+   
+   if (setName) {
+   		def sonoffName = device.displayName.replaceAll(' ','_') 
+        log.debug "$device.displayName - Sonoff name set to $sonoffName"
+   		action ("hostname%20$sonoffName")
+        action ("friendlyname%20$sonoffName")
+        }
+   
+   if (password){
+   		action ("WebPassword%20$password")
+        }
+   
+   if (stopBlink) {
+   	action ("setoption31%20On")
+    }
+    
+  // as the sonoff doesn't send parse information we need to ask for updates every minute
+  // You can remove this if you do not need updates, ie if the device state is not changed
+  // outside of smartthings (by a switch, the Sonoff push button etc)   
+   runEvery1Minute(update)
+   runEvery10Minutes(updateDetails)
+   
+}	
+    
+
+def updateDetails(){
+	logDebug ("detailed update")
+    action("status%200")
+    
+    
+    }
+
+def update(){
+	logDebug ("refreshing status")
+   action("power1")
+    
+    }
+
+def scheduled (){
+	logDebug ("scheduled handler")
+    }
+
+def parse(){
+// If future versions of Tasmota support parsing
+	log.debug "$device.displayName Parsing"
+    log.debug "description: $description"
+    }
+
+def push() {
+	logDebug ("push command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+	action("Power1%20Toggle")
+    runIn (5, update)
+	}
+
+def on() {
+	logDebug ("on command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+	action ("Power1%20On")
+    runIn (5, update)
+    }
+
+def off() {
+	logDebug ("off command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+	action("Power1%20Off")
+    runIn (5, update)
+}
+
+def refresh() {
+	logDebug ("refresh command received")
+    logDebug ("status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+	update()
+    }
+
+
+//action - Sends command to Sonoff
+
+def action(option)
+	{
+	
+    //add password if not blank
+    if (password){
+			option += "&user=admin&password=${password}"
+		}
+    logDebug ("Sending command : '${option}' to $device.displayName at IP:${device.deviceNetworkId}")
+    def theAction = new hubitat.device.HubAction("""GET /cm?cmnd=${option} HTTP/1.1\r\n Accept: */*\r\nHOST: ${device.deviceNetworkId}:80\r\n\r\n""", hubitat.device.Protocol.LAN, "${device.deviceNetworkId}:80", [callback: calledBackHandler])
+
+    sendHubCommand(theAction)
+    
+
+}
+
+void calledBackHandler(hubitat.device.HubResponse hubResponse)
+{
+  //treating data received back from sonoff
+  //when power command used a one line power on or power off is reveived
+  //when status is used then a list of data is receievd, all we are interseted in is the power information
+  //If you want to add more status information then details can be found at https://github.com/arendst/Sonoff-Tasmota/wiki/Commands
+  
+  state.status = hubResponse.body 
+      logDebug ("responded with '$state.status'")
+      def reportedState
+      
+      if (state.status == """{"WARNING":"Need user=<username>&password=<password>")""") {
+      		log.error "$device.displayName (${device.deviceNetworkId}) password failure"
+            sendEvent(name: "authentication", value: 'FAILED')
+            }
+      else {sendEvent(name: "authentication", value: 'ok')
+      }
+   
+    
+   	if (state.status == """{"POWER":"ON"}""") {
+        reportedState = "on"}
+   else
+      if (state.status == """{"POWER1":"ON"}""") {
+        reportedState = "on"}
+   else 
+   if (state.status == """{"POWER":"OFF"}""") {
+     reportedState = "off"}
+        else 
+   if (state.status == """{"POWER1":"OFF"}""") {
+     reportedState = "off"}
+   else
+   if (state.status == """{"SetOption31":"ON"}""") {
+     log.debug "$device.displayName LED blink on WiFi error disabled"}
+   
+   else
+   if (state.status.contains ('Status'))
+   
+   {
+   		def msg = new groovy.json.JsonSlurper().parseText(hubResponse.body)  
+   		def SonoffPower = msg.Status.Power
+        def SonoffFriendlyName = msg.Status.FriendlyName
+        def SonoffUptime = msg.StatusPRM.Uptime
+        def SonoffVersion = msg.StatusFWR.Version
+        def SonoffHostname = msg.StatusNET.Hostname
+        def SonoffIPAddress = msg.StatusNET.IPAddress
+        def SonoffMac = msg.StatusNET.Mac
+        def SonoffLocal = msg.StatusTIM.Local
+        def SonoffSleepMode = msg.StatusSTS.SleepMode
+        def SonoffSleep = msg.StatusSTS.Sleep
+                        
+           
+        sendEvent(name: "FriendlyName", value: "$SonoffFriendlyName")
+   		sendEvent(name: "Uptime", value: "$SonoffUptime")
+        sendEvent(name: "Version", value: "$SonoffVersion")
+        sendEvent(name: "Hostname", value: "$SonoffHostname")
+        sendEvent(name: "Mac", value: "$SonoffMac")
+        sendEvent(name: "ip", value: "$SonoffIPAddress")
+        
+	   if (SonoffPower == 1) {reportedState = "on"}else {reportedState = "off"}
+            logDebug ("updated: FriendlyName:${SonoffFriendlyName} Uptime: ${SonoffUptime} Time: ${SonoffLocal} Version: ${SonoffVersion} HostName: ${SonoffHostname} MAC: ${SonoffMac} SleepMode: ${SonoffSleepMode}")
+        }
+   
+   def currentState = device.currentValue("switch")
+   if (reportedState){
+   		sendEvent(name: "switch", value: reportedState)
+	}
+     
+   sendEvent(name: "refresh", value: "active")
+   
+   
+   
+   def SwitchState = device.currentValue("switch")
+   
+   //if switch state has changed then output to logger
+   if ((SwitchState != currentState) && (SwitchState)) {
+		log.debug "$device.displayName at $device.deviceNetworkId turned $SwitchState"
+   }
+}
+
+def logDebug (text) {
+	if (detailedLog){
+    	log.debug "$app.label : $text"
+        }
+    }
+
+//all status information can be found here https://github.com/arendst/Sonoff-Tasmota/wiki/Commands
+
