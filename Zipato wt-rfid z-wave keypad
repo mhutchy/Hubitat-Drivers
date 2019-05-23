@@ -431,16 +431,13 @@ def zwaveEvent(hubitat.zwave.commands.alarmv2.AlarmReport cmd) {
 			log.warn "WARNING - tamper switch operated"
 		}
 	}
-	if ((cmd.eventParameter.toString()) == "[]") {
-		debug "no event parameter"
-	}
-	else{
+
     	def userNumber = cmd.eventParameter.toString().substring(1,2).toInteger()
     	def userName = [who1, who2, who3, who4, who5, who6, who7, who8, who9][userNumber - 1]
     	if(userName == null){
     		userName = "User $userNumber"
     	}
-	}
+
     def result = []
 	if (cmd.zwaveAlarmType == 6) {	
        
