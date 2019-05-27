@@ -1,0 +1,288 @@
+/**
+ *  Sonoff TH - Tasmota
+ *
+ *  Copyright 2019 Mark Hutchings
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
+ *
+ */
+metadata {
+	definition (name: "Sonoff TH - Tasmota", namespace: "mhutchy", author: "Mark Hutchings", mnmn: "SmartThings", vid: "generic-switch") {
+		capability "Switch"
+		capability "Temperature Measurement"
+        capability "Refresh"
+        capability "Relative Humidity Measurement"
+        capability "Sensor"
+        
+        attribute "Version" , "string"
+        attribute "Mac" , "string"        
+        attribute "maxTempToday", "string"
+        attribute "minTempToday", "string"
+        attribute "maxTempYesterday", "string"
+        attribute "minTempYesterday", "string"
+        attribute "readingDate", "string"
+		
+		command "enableDebugLogging"
+
+	}
+
+    
+ 
+ preferences {
+	
+    input(name: "updateFrequency", type: "enum", title: "How often to poll device for updates in minutes", description: "Update frequency", options:["1","5","10","30"], displayDuringSetup: true, required: true, defaultValue: 1)
+
+    
+    
+    input(name: "TH", type: "bool", title: "Combined temperature and humidity probe?", description: "The sonoff TH can be fitted with either a temperature sensor DS18x20 or combined temperature humidity sensor SI7021. Enable for combined probe", displayDuringSetup: true, required: true)
+
+    
+    input(name: "TOffset", type: "number", title: "Temperature offset", description: "Add an offset in to the measured temperature", displayDuringSetup: true, required: false)
+    input(name: "HOffset", type: "number", title: "Humidity offset", description: "Add an offset in to the measured Humidity", displayDuringSetup: true, required: false)
+    
+    input "logDebugging", "bool", title: "Enable debug logging", displayDuringSetup: true, required: true
+	input "debugDelay", "bool", title: "Disable debug logging after 30m", displayDuringSetup: true, required: true
+	input "infoLog", "bool", title: "Enable info logging", displayDuringSetup: true, required: true
+        
+
+		}
+}
+
+// parse events into attributes
+
+  //  Sonoff doesn't send any data so parse does not work
+
+// handle commands
+
+
+
+def installed(){
+	logDebug ("$device.displayName installed ${settings}")
+	unschedule()
+    Update()
+    initialise()
+}
+
+def updated(){
+	logDebug ("$device.displayName updated ${settings}")
+	unschedule()
+    Update()
+    initialise()
+}
+
+def initialise(){
+	log.debug "$device.displayName initialising ${settings}"
+	if (logDebugging) {
+		enableDebugLogging()
+	}
+	else {
+		debugOff ()
+	}
+	if (debugDelay) {
+		runIn (10, debugOff)
+	}
+  
+  // as the sonoff doesn't send parse information we need to ask for updates every minute
+  // You can remove this if you do not need updates, ie if the device state is not changed
+  // outside of smartthings (by a switch, the Sonoff push button etc)
+  
+   if (!updateFrequency) {runEvery1Minutes(Update)
+   		logDebug ("$device.displayName no updateFrequency set defaulting to every minute")
+        }
+   if (updateFrequency == "1")  {runEvery1Minute(Update)
+   		logDebug ("$device.displayName updating every minute")
+        }
+   if (updateFrequency == "5")  {runEvery5Minutes(Update)
+   		logDebug ("$device.displayName updating every 5 minutes")
+        }
+   if (updateFrequency == "10") {runEvery10Minutes(Update)
+   		logDebug ("$device.displayName updating every 10 minutes")
+        }   
+   if (updateFrequency == "30") {runEvery30Minutes(Update)
+   		logDebug ("$device.displayName updating every 30 minutes")
+        }  
+}	
+    
+
+def Update(evt){
+	logDebug ("$device.displayName refreshing status")
+    action("status%200")
+    }
+
+def parse(){
+// If future versions of Tasmota support parsing
+	log.debug "$device.displayName Parsing"
+    log.debug "description: $description"
+    }
+    
+def refresh() {
+logDebug ("$device.displayName $device.deviceNetworkId refreshing")
+
+	Update()
+    }
+
+def push() {
+	action("Power%20Toggle")
+    runIn (5, Update)
+	}
+
+def on() {
+	action ("Power%20On")
+    runIn (5, Update)
+    }
+
+def off() {
+	action("Power%20Off")
+    runIn (5, Update)
+}
+
+
+
+
+//action - Sends command to Sonoff
+//based on code found here https://community.smartthings.com/t/any-httpget-smatapps-or-code-anywhere/117945/4
+def action(option){
+    
+    state.action = option
+	logDebug ("Sending command : '${option}' to $device.displayName at IP:${device.deviceNetworkId}")
+    def theAction = new hubitat.device.HubAction("""GET /cm?cmnd=${option} HTTP/1.1\r\n Accept: */*\r\nHOST: ${device.deviceNetworkId}:80\r\n\r\n""", hubitat.device.Protocol.LAN, "${device.deviceNetworkId}:80", [callback: calledBackHandler])
+    sendHubCommand(theAction)
+}
+
+void calledBackHandler(hubitat.device.HubResponse hubResponse)
+{
+	
+ 	state.status = hubResponse.body 
+   	logDebug ("$device.displayName responded with ${state.status}")
+   	def reportedState
+   	if (state.status == """{"POWER":"ON"}""") {
+		reportedState = "on"}
+	else     
+		if (state.status == """{"POWER":"OFF"}""") {
+			reportedState = "off"
+		}
+	else {
+        def msg = new groovy.json.JsonSlurper().parseText(hubResponse.body)  
+        def SonoffTemperature = device.currentValue("temperature")
+        def SonoffHumidity = device.currentValue("humidity")
+		if (TH) {
+        	SonoffTemperature = msg.StatusSNS.SI7021.Temperature
+            SonoffHumidity = msg.StatusSNS.SI7021.Humidity
+            sendEvent(name: "humidity", value: "$SonoffHumidity")
+		}
+        else {
+        	SonoffTemperature = msg.StatusSNS.DS18B20.Temperature
+		}
+            
+        def CorrectedTemp = SonoffTemperature
+        if (TOffset) {
+           	logDebug ("$device.displayName - adding offset of ${TOffset}C to reading of ${msg.StatusSNS.SI7021.Temperature}C")
+           	CorrectedTemp = (msg.StatusSNS.SI7021.Temperature as float) + TOffset
+            CorrectedTemp = CorrectedTemp.trunc(1)
+		}
+        
+        sendEvent(name: "temperature", value: "$CorrectedTemp")
+   		def SonoffPower = msg.Status.Power
+        def SonoffIPAddress = msg.StatusNET.IPAddress
+        def SonoffVersion = msg.StatusFWR.Version
+ 
+   		sendEvent(name: "Version", value: "$SonoffVersion")
+       	if (SonoffPower == 1) {
+			reportedState = "on"
+		}
+		else {
+			reportedState = "off"
+		}
+        
+        logDebug ("$device.displayName UPDATE: Switched ${reportedState} ${SonoffTemperature}C ${SonoffVersion}")
+        logDebug ("Max temp currently ${device.currentMaxTempToday}C Min temp currently ${device.currentMinTempToday}C, current temperature ${device.currentTemperature}C")
+	   
+		if (device.currentMaxTempToday == null){
+        	logDebug ("$device.displayName No max temp currently set")
+            sendEvent (name: "maxTempToday", value: "${device.currentTemperature}")
+		}
+		
+            
+		if (device.currentMinTempToday == null)
+        	logDebug ("$device.displayName No min temp currently set")
+            sendEvent (name: "minTempToday", value: "${device.currentTemperature}")
+		}          
+	    
+	   	def maxToday = device.currentMaxTempToday as float
+
+		if (device.currentTemperature > maxToday){
+   			logDebug ("$device.displayName updating max temperature from $maxToday to ${device.currentTemperature}")
+            sendEvent (name: "maxTempToday", value: "${device.currentTemperature}")
+		}
+	
+        def minToday = device.currentMinTempToday as float
+			
+    	if (device.currentTemperature < minToday){
+   			logDebug ("$device.displayName updating min temperature from $minToday to ${device.currenTemperature}")
+            sendEvent (name: "minTempToday", value: "${device.currentTemperature}")
+         }   
+         
+        def df = new java.text.SimpleDateFormat("EEEE")
+    	 // Ensure the new date object is set to local time zone
+    	df.setTimeZone(location.timeZone)
+    	def day = df.format(new Date()) 
+    
+		logDebug ("its is $day today last refresh was $state.dayLast" )
+	   
+		if (day != state.dayLast) {
+    		logDebug ("its a new day yesterday was $state.dayLast today is $day")
+    		sendEvent (name: "minTempYesterday", value: "${device.currentValue("minTempToday")}")
+    		sendEvent (name: "maxTempYesterday", value: "${device.currentValue("maxTempToday")}")
+    		sendEvent (name: "minTempToday", value: "${device.currentValue("temperature")}")
+	    	sendEvent (name: "maxTempToday", value: "${device.currentValue("temperature")}")
+		}
+    
+	def dateTime =  new Date(now()).format("dd-MM-yy  HH:mm:ss", location.timeZone)
+        
+	sendEvent (name: "readingDate", value: "${dateTime}")
+    
+	state.dayLast = day
+	
+	def currentValue = device.currentValue("switch")
+    if (currentValue != reportedState){
+		sendEvent(name: "switch", value: reportedState)
+		sendEvent(name: "refresh", value: "active")
+		logInfo ("Switched ${reportedState} : ${device.currentValue("temperature")}C ${new Date(now()).format("dd-MM-yy  HH:mm:ss", location.timeZone)}")
+					  }
+	}
+
+
+def enableDebugLogging (evt) {
+	if (logDebugging){
+		state.logDebug = 1
+		logDebug ("Switching on debug logging")
+	}
+	if (debugDelay) {
+		runIn (1800, debugOff)
+	}
+}				  
+
+def logDebug (text) {
+	if (state.logDebug){
+		log.debug "$device.displayName : $text"
+	}
+}
+
+def debugOff () {
+	logDebug ("Switching off debug logging")
+	state.logDebug = 0
+}
+
+def logInfo (text) {
+	if (infoLog){
+    	log.info "$device.displayName : $text"
+        }
+}
+
