@@ -89,7 +89,7 @@ def installed(){
 
 
 def initialise(){
-	log.debug "initialising with $settings"
+	logDebug ("initialising with $settings")
 	if (logDebugging) {
 		enableDebugLogging()
 	}
@@ -276,9 +276,13 @@ void calledBackHandler(hubitat.device.HubResponse hubResponse)
 }
 
 def enableDebugLogging (evt) {
-	state.logDebug = 1
-	logDebug ("Switching on debug logging")
-	runIn (1800, debugOff)
+	if (logDebugging){
+		state.logDebug = 1
+		logDebug ("Switching on debug logging")
+	}
+	if (debugDelay) {
+		runIn (1800, debugOff)
+	}
 }
 
 def logDebug (text) {
