@@ -3,6 +3,10 @@
  *
  *  Copyright 2019 Mark Hutchings
  *
+ * 	V1		Ported from smarthings
+ *	V1.1	added option to switch off debugging
+ *	V1.2	Corrected min and max temp bug	
+ *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
  *
@@ -23,13 +27,14 @@ metadata {
         
         attribute "Version" , "string"
         attribute "Mac" , "string"        
-        attribute "maxTempToday", "string"
-        attribute "minTempToday", "string"
-        attribute "maxTempYesterday", "string"
-        attribute "minTempYesterday", "string"
+        attribute "maxTempToday", "number"
+        attribute "minTempToday", "number"
+        attribute "maxTempYesterday", "number"
+        attribute "minTempYesterday", "number"
         attribute "readingDate", "string"
 		
 		command "enableDebugLogging"
+		command "resetMaxMix"
 
 	}
 
@@ -85,9 +90,7 @@ def initialise(){
 	else {
 		debugOff ()
 	}
-	if (debugDelay) {
-		runIn (10, debugOff)
-	}
+
   
   // as the sonoff doesn't send parse information we need to ask for updates every minute
   // You can remove this if you do not need updates, ie if the device state is not changed
@@ -143,7 +146,13 @@ def off() {
     runIn (5, Update)
 }
 
-
+def resetMaxMix ()	{
+    logDebug ("Resetting max and min to current temperature (${device.currentTemperature}")
+    sendEvent (name: "minTempYesterday", value: device.currentTemperature)
+    sendEvent (name: "maxTempYesterday", value: device.currentTemperature)
+    sendEvent (name: "minTempToday", value: device.currentTemperature)
+    sendEvent (name: "maxTempToday", value: device.currentTemperature)
+}
 
 
 //action - Sends command to Sonoff
@@ -183,12 +192,12 @@ void calledBackHandler(hubitat.device.HubResponse hubResponse)
             
         def CorrectedTemp = SonoffTemperature
         if (TOffset) {
-           	logDebug ("$device.displayName - adding offset of ${TOffset}C to reading of ${msg.StatusSNS.SI7021.Temperature}C")
-           	CorrectedTemp = (msg.StatusSNS.SI7021.Temperature as float) + TOffset
+           	logDebug ("$device.displayName - adding offset of ${TOffset}C to reading of ${SonoffTemperature}C")
+           	CorrectedTemp = (SonoffTemperature as float) + TOffset
             CorrectedTemp = CorrectedTemp.trunc(1)
 		}
         
-        sendEvent(name: "temperature", value: "$CorrectedTemp")
+        sendEvent(name: "temperature", value: CorrectedTemp)
    		def SonoffPower = msg.Status.Power
         def SonoffIPAddress = msg.StatusNET.IPAddress
         def SonoffVersion = msg.StatusFWR.Version
@@ -204,29 +213,42 @@ void calledBackHandler(hubitat.device.HubResponse hubResponse)
         logDebug ("$device.displayName UPDATE: Switched ${reportedState} ${SonoffTemperature}C ${SonoffVersion}")
         logDebug ("Max temp currently ${device.currentMaxTempToday}C Min temp currently ${device.currentMinTempToday}C, current temperature ${device.currentTemperature}C")
 	   
+		def maxToday
+		def minToday
+		
+		
 		if (device.currentMaxTempToday == null){
         	logDebug ("$device.displayName No max temp currently set")
-            sendEvent (name: "maxTempToday", value: "${device.currentTemperature}")
+            sendEvent (name: "maxTempToday", value: CorrectedTemp)
+			maxToday = CorrectedTemp
+			
+		}
+		else{
+			maxToday = device.currentValue("maxTempToday")
 		}
 		
             
-		if (device.currentMinTempToday == null)
+		if (device.currentMinTempToday == null){
         	logDebug ("$device.displayName No min temp currently set")
-            sendEvent (name: "minTempToday", value: "${device.currentTemperature}")
+            sendEvent (name: "minTempToday", value: CorrectedTemp)
+			minToday = CorrectedTemp
+			
 		}          
-	    
-	   	def maxToday = device.currentMaxTempToday as float
-
-		if (device.currentTemperature > maxToday){
-   			logDebug ("$device.displayName updating max temperature from $maxToday to ${device.currentTemperature}")
-            sendEvent (name: "maxTempToday", value: "${device.currentTemperature}")
+		else{
+			minToday = device.currentValue("minTempToday")
+		}					
+		
+		
+		if (CorrectedTemp > maxToday){
+   			logDebug ("$device.displayName updating max temperature from $maxToday to $CorrectedTemp")
+            sendEvent (name: "maxTempToday", value: CorrectedTemp)
 		}
 	
-        def minToday = device.currentMinTempToday as float
+        
 			
-    	if (device.currentTemperature < minToday){
-   			logDebug ("$device.displayName updating min temperature from $minToday to ${device.currenTemperature}")
-            sendEvent (name: "minTempToday", value: "${device.currentTemperature}")
+    	if (CorrectedTemp < minToday){
+   			logDebug ("$device.displayName updating min temperature from $minToday to $CorrectedTemp")
+            sendEvent (name: "minTempToday", value: CorrectedTemp)
          }   
          
         def df = new java.text.SimpleDateFormat("EEEE")
@@ -240,8 +262,8 @@ void calledBackHandler(hubitat.device.HubResponse hubResponse)
     		logDebug ("its a new day yesterday was $state.dayLast today is $day")
     		sendEvent (name: "minTempYesterday", value: "${device.currentValue("minTempToday")}")
     		sendEvent (name: "maxTempYesterday", value: "${device.currentValue("maxTempToday")}")
-    		sendEvent (name: "minTempToday", value: "${device.currentValue("temperature")}")
-	    	sendEvent (name: "maxTempToday", value: "${device.currentValue("temperature")}")
+    		sendEvent (name: "minTempToday", value: device.currentTemperature)
+	    	sendEvent (name: "maxTempToday", value: device.currentTemperature)
 		}
     
 	def dateTime =  new Date(now()).format("dd-MM-yy  HH:mm:ss", location.timeZone)
@@ -249,14 +271,14 @@ void calledBackHandler(hubitat.device.HubResponse hubResponse)
 	sendEvent (name: "readingDate", value: "${dateTime}")
     
 	state.dayLast = day
-	
-	def currentValue = device.currentValue("switch")
+	}
+	def currentValue = device.currentSwitch
     if (currentValue != reportedState){
 		sendEvent(name: "switch", value: reportedState)
 		sendEvent(name: "refresh", value: "active")
 		logInfo ("Switched ${reportedState} : ${device.currentValue("temperature")}C ${new Date(now()).format("dd-MM-yy  HH:mm:ss", location.timeZone)}")
-					  }
-	}
+}					  }
+	
 
 
 def enableDebugLogging (evt) {
