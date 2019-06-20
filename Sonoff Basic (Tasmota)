@@ -1,7 +1,9 @@
 /**
  *  Sonoff Basic
- *
+ *  
  *  Copyright 2019 Mark Hutchings
+ *
+ *  V2 - disable driver option added
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -44,8 +46,11 @@ metadata {
 
 		section ("Device preferences"){
 
+			
  			input "setName", "bool", title: "Change Sonoff's hostName and friendly name to match Device Name", displayDuringSetup: true, required: false
+			input "forceIP", "string", title: "IP Address (optional)", description: "If left blank then device network iD will be used as IP", multiple: false, required: false
         	input "stopBlink",  "bool", title: "Disable LED blink when Sonoff WiFi low", displayDuringSetup: true, required: false
+			input "disabled", "bool", title: "Disable driver", description: "If this is set, the driver will neither update switch statuses or send commands to the device (used to avoid errors if device is disconnected)", displayDuringSetup: true, required: false
     	
         
  			input "logDebugging", "bool", title: "Enable debug logging", displayDuringSetup: true, required: true
@@ -89,19 +94,15 @@ def installed(){
 
 
 def initialise(){
-	logDebug ("initialising with $settings")
+	
 	if (logDebugging) {
 		enableDebugLogging()
 	}
 	else {
 		debugOff ()
 	}
-	logDebug ("log debugging active")
-		 
-	if (debugDelay) {
-		runIn (10, debugOff)
-	}
-  
+
+	logDebug ("initialising with $settings")
 
    
    if (setName) {
@@ -122,8 +123,15 @@ def initialise(){
   // as the sonoff doesn't send parse information we need to ask for updates every minute
   // You can remove this if you do not need updates, ie if the device state is not changed
   // outside of smartthings (by a switch, the Sonoff push button etc)   
-   runEvery1Minute(update)
-   runEvery10Minutes(updateDetails)
+	if (!disabled) {
+		runEvery1Minute(update)
+   		runEvery10Minutes(updateDetails)
+	}
+	else {
+		sendEvent(name: "switch", value: "off")
+        unschedule()
+	}
+		
    
 }	
     
@@ -153,40 +161,62 @@ def parse(){
 
 def push() {
 	logDebug ("push command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-	action("Power1%20Toggle")
-    runIn (5, update)
-	}
+    if (!disabled){
+        action("Power1%20Toggle")
+        runIn (5, update)
+    }
+    else {
+        logDebug ("device disabled")
+    }
+}
+                  
 
 def on() {
 	logDebug ("on command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-	action ("Power1%20On")
-    runIn (5, update)
+    if (!disabled){
+	    action ("Power1%20On")
+        runIn (5, update)
     }
+    else {
+        logDebug ("device disabled")
+    }
+}
 
 def off() {
 	logDebug ("off command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-	action("Power1%20Off")
-    runIn (5, update)
+    if (!disabled){
+	    action("Power1%20Off")
+        runIn (5, update)
+    }
+    else {
+        logDebug ("device disabled")
+    }
 }
 
 def refresh() {
-	logDebug ("refresh command received")
-    logDebug ("status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-	update()
+    logDebug ("refresh command received - status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+    if (!disabled){
+	    update()
     }
+    else {
+        logDebug ("device disabled")
+    }
+}
 
 
 //action - Sends command to Sonoff
 
-def action(option)
-	{
-	
+def action(option){
+	def deviceIP = device.deviceNetworkId
+	if (forceIP) {
+		deviceIP = forceIP
+	}
     //add password if not blank
     if (password){
 			option += "&user=admin&password=${password}"
 		}
-    logDebug ("Sending command : '${option}' to $device.displayName at IP:${device.deviceNetworkId}")
-    def theAction = new hubitat.device.HubAction("""GET /cm?cmnd=${option} HTTP/1.1\r\n Accept: */*\r\nHOST: ${device.deviceNetworkId}:80\r\n\r\n""", hubitat.device.Protocol.LAN, "${device.deviceNetworkId}:80", [callback: calledBackHandler])
+    logDebug ("Sending command : '${option}' to $device.displayName at IP:${deviceIP}")
+    def theAction = new hubitat.device.HubAction("""GET /cm?cmnd=${option} HTTP/1.1\r\n Accept: */*\r\nHOST: ${deviceIP}:80\r\n\r\n""", hubitat.device.Protocol.LAN, "${deviceIP}:80", [callback: calledBackHandler])
 
     sendHubCommand(theAction)
     
@@ -200,12 +230,13 @@ void calledBackHandler(hubitat.device.HubResponse hubResponse)
   //when status is used then a list of data is receievd, all we are interseted in is the power information
   //If you want to add more status information then details can be found at https://github.com/arendst/Sonoff-Tasmota/wiki/Commands
   
-  state.status = hubResponse.body 
-      logDebug ("responded with '$state.status'")
-      def reportedState
+state.status = hubResponse.body 
+logDebug ("responded with '$state.status'")
+def reportedState
+
       
       if (state.status == """{"WARNING":"Need user=<username>&password=<password>")""") {
-      		log.error "$device.displayName (${device.deviceNetworkId}) password failure"
+      		log.error "$device.displayName  password failure"
             sendEvent(name: "authentication", value: 'FAILED')
             }
       else {sendEvent(name: "authentication", value: 'ok')
@@ -263,7 +294,7 @@ void calledBackHandler(hubitat.device.HubResponse hubResponse)
 	   logInfo ("turned $reportedState")
 	}
      
-   sendEvent(name: "refresh", value: "active")
+  // sendEvent(name: "refresh", value: "active")
    
    
    
