@@ -1,6 +1,6 @@
 /**
  *  Sonoff Basic
- *  
+ *
  *  Copyright 2019 Mark Hutchings
  *
  *  V2 - disable driver option added
@@ -16,7 +16,7 @@
  *
  */
 metadata {
-	definition (name: "Sonoff Basic - Tasmota", namespace: "mhutchy", author: "Mark Hutchings", mnmn: "SmartThings", vid: "generic-switch") {
+	definition (name: "Sonoff Basic - Tasmota", namespace: "mhutchy", author: "Mark Hutchings") {
 		capability "Actuator"
 		capability "Momentary"
 		capability "Switch"
