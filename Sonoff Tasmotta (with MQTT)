@@ -1,0 +1,410 @@
+/**
+ *  Sonoff Basic
+ *
+ *  Copyright 2019 Mark Hutchings
+ *
+ *  V2 - disable driver option added
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS"BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
+ *
+ */
+metadata {
+	definition (name: "Tasmotta (with MQTT)", namespace: "mhutchy", author: "Mark Hutchings") {
+		capability "Actuator"
+		capability "Momentary"
+		capability "Switch"
+        capability "Refresh"
+        
+        attribute "FriendlyName", "string"
+        attribute "Uptime", "string"
+        attribute "Version", "string"
+        attribute "Hostname", "string"
+        attribute "Mac", "string"
+        attribute "ip", "string"
+        attribute "authentication", "string"
+                 
+        
+        command "enableDebugLogging"
+        command "initialise"
+       
+		
+	}
+    
+ 
+ 
+ 
+	preferences {
+ 
+    	section ("Authentication, user is hardcoded as admin"){   
+     	input "password", "string", title: "Password (if used)", multiple: false, required: false
+         }
+
+		section ("Device preferences"){
+
+			input "forceIP", "string", title: "IP Address (optional)", description: "If left blank then device network iD will be used as IP", multiple: false, required: false
+        	input "stopBlink",  "bool", title: "Disable LED blink when Sonoff WiFi low", displayDuringSetup: true, required: false
+            input "autoUpdate", "bool", title: "Auto update status", description: "If this is set, the driver will auto update switch status every minute", displayDuringSetup: true, required: false
+    		input "disabled", "bool", title: "Disable driver", description: "If this is set, the driver will neither update switch statuses or send commands to the device (used to avoid errors if device is disconnected)", displayDuringSetup: true, required: false
+            
+            input "useMQTT", "bool", title: "Use MQTT?", description: "Use MQTT instead of web server to communicate with device", displayDuringSetup: true, required: false
+            input "mqttServer", "string", title: "MQTT Server URL", displayDuringSetup:true
+        
+ 			input "logDebugging", "bool", title: "Enable debug logging", displayDuringSetup: true, required: true
+			input "debugDelay", "bool", title: "Disable debug logging after 30m", displayDuringSetup: true, required: true
+			input "infoLog", "bool", title: "Enable info logging", displayDuringSetup: true, required: true
+        
+      
+        	input "2R",  "bool", title: "2R", description: "If this Sonoff is a 2 output device then the option below should be enabled, this device handler will opperate the 1st relay, a 2R handler is need for the 2nd relay", displayDuringSetup: true, required: false
+
+		}
+	}
+
+
+}
+
+
+
+
+
+// handle commands
+
+def updated(){
+	log.debug "Updated"
+	unschedule()
+	updateDetails()
+    initialise()
+	
+}
+
+
+def installed(){
+	log.debug "Installed"
+	unschedule()
+	updateDetails()
+    initialise()
+}
+
+
+
+def initialise(){
+    log.debug "$device.displayName : initialising with $settings"
+    unschedule()
+    
+	
+	if (logDebugging) {
+		enableDebugLogging()
+	}
+	else {
+		debugOff ()
+	}
+    
+    
+    state.deviceName = device.displayName.replaceAll(' ','_') 
+    logDebug ("Setting topic to $state.deviceName (taken from ${device.displayName}")
+    action ("Backlog%20topic%20${state.deviceName}%3Bmqtthost%20${mqttServer}%3Bhostname%20${state.deviceName}%3Bfriendlyname%20$state.deviceName")
+
+   
+   if (password){
+   		action ("WebPassword%20$password")
+        }
+   
+   if (stopBlink) {
+   	action ("setoption31%20On")
+    }
+    
+    updateDetails ()
+    
+  // as the sonoff doesn't send parse information we need to ask for updates every minute
+  // You can remove this if you do not need updates, ie if the device state is not changed
+  // outside of smartthings (by a switch, the Sonoff push button etc)   
+    
+    if (useMQTT){
+        logDebug ("Using MQTT as interface")
+        
+        MQTT_Initialise()
+    }
+    
+	if (!disabled && autoUpdate && !useMQTT) {
+        logDebug ("Scheduling autoupdates")
+		runEvery1Minute(update)
+   		runEvery10Minutes(updateDetails)
+	}
+
+    if (disabled) {
+        sendEvent(name: "switch", value: "off")
+    }
+		
+   
+}	
+    
+
+def MQTT_Initialise(){
+    
+    logDebug ("MQTT_initialising")
+    action ("topic%20 mqtthost%20$mqttServer")
+    
+    interfaces.mqtt.connect("tcp://${mqttServer}:1883", state.deviceName, null, null)
+    
+    logDebug ("MQTT connected with Hostname: $state.deviceName")
+    def topic = "stat/$state.deviceName/POWER"  //subscribe to POWER for switch status
+    interfaces.mqtt.subscribe(topic, 1)
+    
+}  
+
+
+def mqttClientStatus(message){
+    logDebug ("Client status: $message")
+}
+
+def parse(message){
+    logDebug ("new message received: $message")
+    mqttMap = interfaces.mqtt.parseMessage(message)
+    logDebug ("parsed $mqttMap")
+    
+    
+    switchStatus = mqttMap["payload"]
+    switchStatus = switchStatus.toLowerCase()
+    logInfo ("MQTT: Switched $switchStatus")
+    sendEvent(name: "switch", value: switchStatus)
+}
+
+def updateDetails(){
+	logDebug ("detailed update")
+    action("status%200")
+    
+    
+    }
+
+def update(){
+	    logDebug ("refreshing status")
+        action("power1")
+}
+
+def scheduled (){
+	logDebug ("scheduled handler")
+    }
+
+
+
+def push() {
+	logDebug ("push command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+    if (disabled){
+        logDebug ("device disabled")
+    }
+    else {
+        if (useMQTT){
+            mqttAction("toggle")
+        }
+        else {
+            action ("Power1%20Toggle")
+            runIn (5, update)
+        }
+    }
+}                
+
+def on() {
+	logDebug ("on command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+    if (disabled){
+        logDebug ("device disabled")
+    }
+    else {
+        if (useMQTT){
+            mqttAction("on")
+        }
+        else {
+            action ("Power1%20On")
+            runIn (5, update)
+        }
+    }
+}
+
+def off() {
+	logDebug ("off command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+    if (disabled){
+        logDebug ("device disabled")
+    }
+    else {
+        if (useMQTT){
+            mqttAction("off")
+        }
+        else {
+            action ("Power1%20Off")
+            runIn (5, update)
+        }
+    }
+}
+
+def refresh() {
+    logDebug ("refresh command received - status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
+    if (!disabled){
+	    update()
+    }
+    else {
+        logDebug ("device disabled")
+    }
+}
+
+
+//action - Sends command to Sonoff
+
+def mqttAction(command){
+    
+    connected = interfaces.mqtt.isConnected()
+    if (!connected){
+        log.warn "$device.displayName : MQTT Not connected, connecting..."
+        interfaces.mqtt.connect("tcp://${mqttServer}:1883", state.deviceName, null, null)
+        connected = interfaces.mqtt.isConnected()
+    }
+        
+    if (connected){
+        topic = "cmnd/${state.deviceName}/POWER"
+        //command = "POWER OFF"
+        logDebug ("Sending MQTT: $command to $topic")
+        // example command cmnd/sonoff_test/POWER on
+        // working interfaces.mqtt.publish("cmnd/Stone_light/POWER", command, 1, true)
+        interfaces.mqtt.publish(topic, command, 1, true)
+    }
+    else {
+        
+        log.error "$device.displayName : still not connecetd"
+        MQTT_Initialise()
+    }
+    
+}
+
+def action(option){
+	def deviceIP = device.deviceNetworkId
+	if (forceIP) {
+		deviceIP = forceIP
+	}
+    //add password if not blank
+    if (password){
+			option += "&user=admin&password=${password}"
+		}
+    logDebug ("Sending http command : '${option}' to $device.displayName at IP:${deviceIP}")
+    def theAction = new hubitat.device.HubAction("""GET /cm?cmnd=${option} HTTP/1.1\r\n Accept: */*\r\nHOST: ${deviceIP}:80\r\n\r\n""", hubitat.device.Protocol.LAN, "${deviceIP}:80", [callback: calledBackHandler])
+
+    sendHubCommand(theAction)
+    
+
+}
+
+void calledBackHandler(hubitat.device.HubResponse hubResponse)
+{
+  //treating data received back from sonoff
+  //when power command used a one line power on or power off is reveived
+  //when status is used then a list of data is receievd, all we are interseted in is the power information
+  //If you want to add more status information then details can be found at https://github.com/arendst/Sonoff-Tasmota/wiki/Commands
+  
+state.status = hubResponse.body 
+logDebug ("responded with '$state.status'")
+def reportedState
+
+      
+      if (state.status == """{"WARNING":"Need user=<username>&password=<password>")""") {
+      		log.error "$device.displayName  password failure"
+            sendEvent(name: "authentication", value: 'FAILED')
+            }
+      else {sendEvent(name: "authentication", value: 'ok')
+      }
+   
+    
+   	if (state.status == """{"POWER":"ON"}""") {
+        reportedState = "on"}
+   else
+      if (state.status == """{"POWER1":"ON"}""") {
+        reportedState = "on"}
+   else 
+   if (state.status == """{"POWER":"OFF"}""") {
+     reportedState = "off"}
+        else 
+   if (state.status == """{"POWER1":"OFF"}""") {
+     reportedState = "off"}
+   else
+   if (state.status == """{"SetOption31":"ON"}""") {
+     logDebug ("$device.displayName LED blink on WiFi error disabled")
+   }   
+   else
+   if (state.status.contains ('Status'))
+   
+   {
+   		def msg = new groovy.json.JsonSlurper().parseText(hubResponse.body)  
+   		def SonoffPower = msg.Status.Power
+        def SonoffFriendlyName = msg.Status.FriendlyName
+        def SonoffUptime = msg.StatusPRM.Uptime
+        def SonoffVersion = msg.StatusFWR.Version
+        def SonoffHostname = msg.StatusNET.Hostname
+        def SonoffIPAddress = msg.StatusNET.IPAddress
+        def SonoffMac = msg.StatusNET.Mac
+        def SonoffLocal = msg.StatusTIM.Local
+        def SonoffSleepMode = msg.StatusSTS.SleepMode
+        def SonoffSleep = msg.StatusSTS.Sleep
+                        
+           
+        sendEvent(name: "FriendlyName", value: "$SonoffFriendlyName")
+   		sendEvent(name: "Uptime", value: "$SonoffUptime")
+        sendEvent(name: "Version", value: "$SonoffVersion")
+        sendEvent(name: "Hostname", value: "$SonoffHostname")
+        sendEvent(name: "Mac", value: "$SonoffMac")
+        sendEvent(name: "ip", value: "$SonoffIPAddress")
+        
+	   if (SonoffPower == 1) {reportedState = "on"}else {reportedState = "off"}
+            logDebug ("updated: FriendlyName:${SonoffFriendlyName} Uptime: ${SonoffUptime} Time: ${SonoffLocal} Version: ${SonoffVersion} HostName: ${SonoffHostname} MAC: ${SonoffMac} SleepMode: ${SonoffSleepMode}")
+        }
+   
+   def currentState = device.currentValue("switch")
+   if (reportedState != currentState){
+	   	logDebug ("currentState = $currentState sending Event $reportedState")
+	   	
+   		sendEvent(name: "switch", value: reportedState)
+	   logInfo ("turned $reportedState")
+	}
+     
+  // sendEvent(name: "refresh", value: "active")
+   
+   
+   
+   def SwitchState = device.currentValue("switch")
+   
+   //if switch state has changed then output to logger
+   if ((SwitchState != currentState) && (SwitchState)) {
+	   logInfo ("turned $SwitchState")
+   }
+}
+
+def enableDebugLogging (evt) {
+	if (logDebugging){
+		state.logDebug = 1
+		logDebug ("Switching on debug logging")
+	}
+	if (debugDelay) {
+		runIn (1800, debugOff)
+	}
+}
+
+def logDebug (text) {
+	if (state.logDebug){
+		log.debug "$device.displayName : $text"
+	}
+}
+
+def debugOff () {
+	logDebug ("Switching off debug logging")
+	state.logDebug = 0
+}
+
+def logInfo (text) {
+	if (infoLog){
+    	log.info "$device.displayName : $text"
+        }
+}
+
+//all status information can be found here https://github.com/arendst/Sonoff-Tasmota/wiki/Commands
+
