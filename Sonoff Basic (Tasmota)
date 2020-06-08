@@ -1,9 +1,17 @@
 /**
- *  Sonoff Basic
+ *  Sonoff Tasmota
  *
  *  Copyright 2019 Mark Hutchings
  *
- *  V2 - disable driver option added
+ * 	V1		Ported from smarthings
+ *	V1.1	added option to switch off debugging
+ *	V1.2	Corrected min and max temp bug	
+ *  V1.3	Added "don't update max and min when off" option
+ *  V2.0    Disable driver option added
+ *  V3.0    Major revision: 
+ *            MQTT protocol added
+ *            Sonoff Basic, 2R, 4CH, TH and POW all combined into same driver
+ *            General tidy-up
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -11,201 +19,500 @@
  *      http://www.apache.org/licenses/LICENSE-2.0
  *
  *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
- *  on an "AS IS"BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
  *  for the specific language governing permissions and limitations under the License.
  *
  */
 metadata {
-	definition (name: "Sonoff Basic - Tasmota", namespace: "mhutchy", author: "Mark Hutchings") {
-		capability "Actuator"
-		capability "Momentary"
+	definition (name: "Tasmota (sonoff)", namespace: "mhutchy", author: "Mark Hutchings", importUrl:"") {
 		capability "Switch"
+        if (sonoffTH){
+		    capability "Temperature Measurement"
+            capability "Relative Humidity Measurement"
+        }
+        if (sonoffPOW){
+		    capability "Voltage Measurement"
+            capability "Energy Meter"
+        
+        }        
+        
+        
         capability "Refresh"
         
-        attribute "FriendlyName", "string"
-        attribute "Uptime", "string"
-        attribute "Version", "string"
-        attribute "Hostname", "string"
-        attribute "Mac", "string"
-        attribute "ip", "string"
-        attribute "authentication", "string"
-                 
+        capability "Sensor"
         
-        command "enableDebugLogging"
+        attribute "Version" , "string"
+        attribute "Mac" , "string"        
+        attribute "maxTempToday", "number"
+        attribute "minTempToday", "number"
+        attribute "maxTempYesterday", "number"
+        attribute "minTempYesterday", "number"
+        attribute "readingDate", "string"
 		
+		command "enableDebugLogging"
+		command "resetMaxMix"
+        command "initialise"
+        command "push"
+        command "MQTT_Initialise"
+
 	}
+
     
  
- 
- 
-	preferences {
- 
-    	section ("Authentication, user is hardcoded as admin"){   
-     	input "password", "string", title: "Password (if used)", multiple: false, required: false
-         }
-
-		section ("Device preferences"){
-
-			
- 			input "setName", "bool", title: "Change Sonoff's hostName and friendly name to match Device Name", displayDuringSetup: true, required: false
-			input "forceIP", "string", title: "IP Address (optional)", description: "If left blank then device network iD will be used as IP", multiple: false, required: false
-        	input "stopBlink",  "bool", title: "Disable LED blink when Sonoff WiFi low", displayDuringSetup: true, required: false
-			input "disabled", "bool", title: "Disable driver", description: "If this is set, the driver will neither update switch statuses or send commands to the device (used to avoid errors if device is disconnected)", displayDuringSetup: true, required: false
-    	
-        
- 			input "logDebugging", "bool", title: "Enable debug logging", displayDuringSetup: true, required: true
-			input "debugDelay", "bool", title: "Disable debug logging after 30m", displayDuringSetup: true, required: true
-			input "infoLog", "bool", title: "Enable info logging", displayDuringSetup: true, required: true
-        
-      
-        	input "2R",  "bool", title: "2R", description: "If this Sonoff is a 2 output device then the option below should be enabled, this device handler will opperate the 1st relay, a 2R handler is need for the 2nd relay", displayDuringSetup: true, required: false
+ preferences {
+     
+	 input "disabled", "bool", title: "Disable driver", description: "If this is set, the driver will neither update switch statuses or send commands to the device (used to avoid errors if device is disconnected)", displayDuringSetup: true, required: false
+     input "password", "string", title: "Password (if used)", multiple: false, required: false
+     input "forceIP", "string", title: "IP Address (optional)", description: "If left blank then device network iD will be used as IP", multiple: false, required: false
+     input(name: "updateFrequency", type: "enum", title: "How often to request new data (not needed if using MQTT as data is updated live)", description: "Update frequency", options:["0","1m","5m","10m","30m","1h","3h"], displayDuringSetup: true, required: true, defaultValue: false)
+    
+     input(name: "multiSwitch", type: "bool", title: "Device has more than one switch?", defaultValue: false)      
+     input(name: "switchNumber", type: "enum", title: "Switch number", description: "If sonoff has multilpe switches, specify the switch to be used", options:["1","2","3","4"], displayDuringSetup: true, required: true, defaultValue: 1)
+    
+                
+    input(name: "sonoffTH", type: "bool", title: "Temperature and/or humidity measurement?", defaultValue: false)
+    input(name: "sonoffPOW", type: "bool", title: "Power measurement?", defaultValue: false)
+   
+    
+    input(name: "TOffset", type: "number", title: "Temperature offset", description: "Add an offset in to the measured temperature", defaultValue: 0, displayDuringSetup: true, required: false)
+    
+    input "useMQTT", "bool", title: "Use MQTT?", description: "Use MQTT instead of web server to communicate with device", displayDuringSetup: true, required: false
+    input "mqttServer", "string", title: "MQTT Server URL", displayDuringSetup:true    
+    
+    input "logDebugging", "bool", title: "Enable debug logging", displayDuringSetup: true, required: true, defaultValue: true
+	input "debugDelay", "bool", title: "Disable debug logging after 30m", displayDuringSetup: true, defaultValue: true, required: true
+	input "infoLog", "bool", title: "Enable info logging", displayDuringSetup: true, required: true, defaultValue: true
+    
+    
 
 		}
-	}
-
-
 }
 
 // parse events into attributes
 
-
   //  Sonoff doesn't send any data so parse does not work
-
-
 
 // handle commands
 
-def updated(){
-	log.debug "Updated"
-	unschedule()
-	updateDetails()
-    initialise()
-	
-}
 
 
 def installed(){
-	log.debug "Installed"
+	logDebug ("$device.displayName installed ${settings}")
 	unschedule()
-	updateDetails()
+    Update()
     initialise()
 }
 
-
+def updated(){
+	logDebug ("$device.displayName updated ${settings}")
+	unschedule()
+    Update()
+    initialise()
+}
 
 def initialise(){
-	
+	log.debug "$device.displayName initialising ${settings}"
+    state.clear()
+    unschedule()
+    
+    
+    interfaces.mqtt.unsubscribe("stat/$state.deviceName/")
+    
+    
+    
+    
 	if (logDebugging) {
 		enableDebugLogging()
 	}
 	else {
 		debugOff ()
 	}
-
-	logDebug ("initialising with $settings")
-
-   
-   if (setName) {
-   		def sonoffName = device.displayName.replaceAll(' ','_') 
-        logDebug ("$device.displayName - Sonoff name set to $sonoffName")
-   		action ("hostname%20$sonoffName")
-        action ("friendlyname%20$sonoffName")
-        }
-   
-   if (password){
-   		action ("WebPassword%20$password")
-        }
-   
-   if (stopBlink) {
-   	action ("setoption31%20On")
-    }
     
-  // as the sonoff doesn't send parse information we need to ask for updates every minute
-  // You can remove this if you do not need updates, ie if the device state is not changed
-  // outside of smartthings (by a switch, the Sonoff push button etc)   
-	if (!disabled) {
-		runEvery1Minute(update)
-   		runEvery10Minutes(updateDetails)
-	}
-	else {
-		sendEvent(name: "switch", value: "off")
-        unschedule()
-	}
-		
-   
-}	
-    
-
-def updateDetails(){
-	logDebug ("detailed update")
-    action("status%200")
-    
-    
-    }
-
-def update(){
-	logDebug ("refreshing status")
-   action("power1")
-    
-    }
-
-def scheduled (){
-	logDebug ("scheduled handler")
-    }
-
-def parse(){
-// If future versions of Tasmota support parsing
-	logDebug ("$device.displayName Parsing")
-    logDebug ("description: $description")
-    }
-
-def push() {
-	logDebug ("push command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-    if (!disabled){
-        action("Power1%20Toggle")
-        runIn (5, update)
+    //build command
+    if (multiSwitch){
+        state.powerCommand = "POWER${switchNumber}"
     }
     else {
-        logDebug ("device disabled")
+        state.powerCommand = "POWER"
+    }
+
+    state.deviceName = device.displayName.replaceAll(' ','_') 
+    logDebug ("Setting topic to $state.deviceName (taken from ${device.displayName}")  
+
+    if (useMQTT){
+        action ("Backlog%20topic%20${state.deviceName}%3Bmqtthost%20${mqttServer}%3Bhostname%20${state.deviceName}%3Bfriendlyname%20$state.deviceName%3B")
+        logDebug ("MQTT enabled")
+        MQTT_Initialise()
+    }
+    else{
+        logDebug ("MQTT disabled")
+        interfaces.mqtt.disconnect()
+        interfaces.mqtt.unsubscribe()
+    }
+    
+    if ((!updateFrequency) || (updateFrequency=="0"))  {
+        logDebug ("$device.displayName automatic HTTP updates disabled")
+    }
+    else if (updateFrequency == "1m")  {
+        runEvery1Minute(refresh)
+   	    logDebug ("$device.displayName updating every minute")
+    }
+    else if (updateFrequency == "5m")  {
+        runEvery5Minutes(refresh)
+ 	    logDebug ("$device.displayName updating every 5 minutes")
+    }
+    else if (updateFrequency == "10m") {
+        runEvery10Minutes(refresh)
+ 	    logDebug ("$device.displayName updating every 10 minutes")
+    }   
+    else if (updateFrequency == "30m") {
+        runEvery30Minutes(refresh)
+ 	    logDebug ("$device.displayName updating every 30 minutes")
+    }  
+    else if (updateFrequency == "1h") {
+        runEvery1Hour(refresh)
+	    logDebug ("$device.displayName updating every 1 hour")
+    }
+    else if (updateFrequency == "3h") {
+        runEvery3Hours(refresh)
+	    logDebug ("$device.displayName updating every 3 hours")
+    }
+    
+      
+    
+}	
+
+def MQTT_Initialise(){
+    
+    logDebug ("MQTT_initialising")
+    
+        
+    interfaces.mqtt.connect("tcp://${mqttServer}:1883", state.deviceName, null, null)
+    
+    logDebug ("MQTT connected with Hostname: $state.deviceName")
+    //subscribe to POWER for switch status
+    topic = "stat/$state.deviceName/" 
+
+        
+    logDebug ("Subscibing to ${topic}${state.powerCommand} for switch status")
+    interfaces.mqtt.subscribe("${topic}${state.powerCommand}", 1)
+    
+    if (sonoffTH){
+        logDebug ("Subscibing to ${topic}STATUS10 for TH")
+        interfaces.mqtt.subscribe("${topic}STATUS10", 2)
+    }
+    if (sonoffPOW){
+        logDebug ("Subscibing to ${topic}STATUS10 for POW")
+        interfaces.mqtt.subscribe("${topic}STATUS10", 2)
+    }
+}  
+
+
+def mqttClientStatus(message){
+    if (message.contains ('Error')){
+        logWarn ("Error: $message")
+    }
+    else {
+        logInfo ("Client status: $message")
+    }
+    
+    //checking for connection lost (Error: Connection lost:)
+    if (message.contains('Connection lost')){
+        logDebug ("Calling MQTT_Initialise to re-establish connection")
+        MQTT_Initialise()
+    }
+ 
+}
+
+def parse(message){
+    mqttMap = interfaces.mqtt.parseMessage(message)
+    logDebug ("new MQTT message received: $mqttMap")
+    payload = mqttMap["payload"]
+    
+    extractFromPayload (payload)
+}
+
+def extractFromPayload (payload){
+    
+    if ((payload == "ON") || (payload == "OFF")){
+        payload = payload.toLowerCase()
+        sendEvent(name: "switch", value: payload)
+        logInfo ("switched: ${payload} " ) 
+    }
+    else {
+       
+        json = new groovy.json.JsonSlurper().parseText(payload)  
+        logDebug ("JSON Message: $json")
+        
+       
+        
+        if (payload.contains('POWER')){
+            logDebug ("POWER found")
+            switchStatus = json.POWER
+            if (switchStatus){
+                switchStatus = switchStatus.toLowerCase()
+                sendEvent(name: "switch", value: switchStatus)
+                logInfo ("switched: ${switchStatus} " ) 
+            }
+            else{
+                logDebug ("No valid POWER value found - not switched" ) 
+            }
+            
+        }                
+        
+        if (payload.contains('WARNING')){
+            log.warn (payload)
+        }
+           
+        //DS18B20 probe
+        if (payload.contains('DS18B20')){
+            logDebug ("DS18B20 temperature found")
+            
+            temperature = json.StatusSNS.DS18B20.Temperature
+            unit = json.StatusSNS.TempUnit
+            updateTemperature (temperature, unit)
+        }
+        //SI7021 probe
+        if (payload.contains('SI7021')){
+            logDebug ("SI7021 temperature found")
+        
+            temperature = json.StatusSNS.SI7021.Temperature
+            unit = json.StatusSNS.TempUnit
+            updateTemperature (temperature, unit)
+            humidity = json.StatusSNS.SI7021.Humidity
+            sendEvent(name: "humidity", value: humidity)
+            logInfo ("Humidity: ${humidity}%")
+        }
+        //SONOFF POW
+        if (payload.contains('ENERGY')){
+            logDebug ("Energy data found")
+            power = json.StatusSNS.ENERGY.Power
+            apparentPower = json.StatusSNS.ENERGY.ApparentPower
+            reactivePower = json.StatusSNS.ENERGY.ReactivePower
+            powerFactor = json.StatusSNS.ENERGY.Factor
+            voltage = json.StatusSNS.ENERGY.Voltage
+            current = json.StatusSNS.ENERGY.Current
+            energyTotal = json.StatusSNS.ENERGY.Total
+        
+        
+            sendEvent(name: "voltage", value: voltage)
+       		sendEvent(name: "power", value: power)
+            sendEvent(name: "energy", value: energyTotal)
+            sendEvent(name: "current", value: current)
+            sendEvent(name: "reactivePower", value: reactivePower)
+            sendEvent(name: "powerFactor", value: powerFactor)
+            sendEvent(name: "apparentPower", value: apparentPower)
+        
+            logInfo("voltage:$voltage current:$current power:$power apparentPower:$apparentPower reactivePower:$reactivePower powerFactor:$powerFactor")
+        }
+    
+         
+        if (json.containsKey('SonoffIPAddress')){
+            IPAddress = json.StatusNET.IPAddress
+            sendEvent(name: "IPAddress", value: IPAddress)
+        }
+    
+        if (json.containsKey('SonoffVersion')){
+            tasmotaVersion = json.StatusFWR.Version
+            sendEvent(name: "tasmotaVersion", value: tasmotaVersion)
+        }
     }
 }
-                  
 
-def on() {
-	logDebug ("on command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-    if (!disabled){
-	    action ("Power1%20On")
-        runIn (5, update)
+def updateTemperature (temperatureRaw, unit){
+    
+    if (TOffset) {
+        logDebug ("$device.displayName - adding offset of ${TOffset}C to reading of ${temperatureRaw}${unit}")
+        temperature = (temperatureRaw as float) + TOffset
+        temperature = temperature.trunc(1)
+		}
+    
+    sendEvent(name: "temperature", value: temperature)
+    
+    logInfo ("Temperature: ${temperatureRaw}${unit}")
+    if (device.currentMaxTempToday == null){
+        logDebug ("$device.displayName No max temp currently set")
+        sendEvent (name: "maxTempToday", value: temperature)
+		maxToday = temperature
+    }	
+	else{
+        maxToday = device.currentValue("maxTempToday")
+    }		
+            
+	if (device.currentMinTempToday == null){
+        logDebug ("$device.displayName No min temp currently set")
+        sendEvent (name: "minTempToday", value: temperature)
+		minToday = temperature
+    }	
+	       
+	else{
+        minToday = device.currentValue("minTempToday")
+    }		
+    
+    if (temperature > maxToday){
+        logDebug ("$device.displayName updating max temperature from $maxToday to $temperature")
+        sendEvent (name: "maxTempToday", value: temperature)
+    }
+	if (temperature < minToday){
+        logDebug ("$device.displayName updating min temperature from $minToday to $temperature")
+        sendEvent (name: "minTempToday", value: temperature)
+    }
+    
+    //reset max and min on date change
+    def df = new java.text.SimpleDateFormat("EEEE")
+    df.setTimeZone(location.timeZone)
+    def day = df.format(new Date()) 
+	if (day != state.dayLast) {
+        logDebug ("its is $day today last refresh was $state.dayLast, resetting max and min" )
+    	resetMaxMin()
+    }
+    state.dayLast = day
+	
+}
+    
+
+def Update(evt){
+	logDebug ("$device.displayName refreshing status via HTTP")
+    action("status%200")
+    }
+
+   
+def refresh() {
+    
+    logDebug ("$device.displayName $device.deviceNetworkId refreshing")
+    
+    if (useMQTT){
+        mqttAction("POWER$switchNo"," ")
+        if (sonoffTH || sonoffPOW){
+            mqttAction("STATUS","10")
+        }
+    }
+    else{
+	    Update()
+    }
+}
+
+def push() {
+	logDebug ("push command received, status: switch - ${device.currentValue("switch")}")
+    if (disabled){
+        logDebug ("device disabled")
     }
     else {
+        if (useMQTT){
+            mqttAction("${state.powerCommand}","toggle")
+        }
+        else {
+            action ("${state.powerCommand}%20Toggle")
+            runIn (5, Update)
+        }
+    }
+}    
+    
+    
+
+def on() {
+	logDebug ("on command received, status: switch - ${device.currentValue("switch")}")
+    if (disabled){
         logDebug ("device disabled")
+    }
+    else {
+        switchCommand ('on')
     }
 }
 
 def off() {
-	logDebug ("off command received, status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-    if (!disabled){
-	    action("Power1%20Off")
-        runIn (5, update)
+	logDebug ("off command received, status: switch - ${device.currentValue("switch")}")
+    if (disabled){
+        logDebug ("device disabled")
     }
     else {
-        logDebug ("device disabled")
+        switchCommand ('off')
     }
 }
 
-def refresh() {
-    logDebug ("refresh command received - status: switch - ${device.currentValue("switch")}, Momentary - ${device.currentValue("momentary")}")
-    if (!disabled){
-	    update()
+def switchCommand (command){
+    //handler to opperate switch
+    logDebug ("Switching $command")
+    if (device.currentSwitch == command){
+        logDebug ("device already showing as $command setting to null")
+        sendEvent(name: "switch", value: 0) 
+    }
+    if (useMQTT){
+        mqttAction("${state.powerCommand}",command)
+        runIn(2, 'checkSwitched', [data: command])
     }
     else {
-        logDebug ("device disabled")
+        action ("${state.powerCommand}%20$command")
+        runIn (5, Update)
     }
 }
 
+def checkSwitched (command){
+    if (!state.failCount){state.failCount = 0}
+    
+    maxFailures = 5
+    //Handler to check that the device has correctly responded to switch command
+    logDebug ("Checking device switched command:${command} switch:${device.currentSwitch}")
+    
+    if (device.currentSwitch == command){
+        logDebug ("Correctly switched $command")
+        state.failCount = 0
+        sendEvent(name: "failure", value: 0)  
+    }
+    else {
+        state.failCount += 1
+        logWarn ("Did not switch $command : failcount:$state.failCount")
+        if (state.failCount >= maxFailures){
+            logError ("Failed to switch $state.failCount times")
+            sendEvent(name: "failure", value: 1)  
+            state.failCount = 0
+        }
+        else {
+            logDebug ("Re-Initialsing MQTT")
+            MQTT_Initialise()
+            switchCommand (command)
+        }
+        
+    }
+}
+    
 
+
+def resetMaxMin ()	{
+	logDebug ("Resetting max and min to current temperature (${device.currentTemperature}")
+    sendEvent (name: "minTempYesterday", value: device.currentTemperature)
+    sendEvent (name: "maxTempYesterday", value: device.currentTemperature)
+    sendEvent (name: "minTempToday", value: device.currentTemperature)
+	sendEvent (name: "maxTempToday", value: device.currentTemperature)
+}
+
+def mqttAction(subTopic, command){
+    
+    connected = interfaces.mqtt.isConnected()
+    if (!connected){
+        logWarn ("$device.displayName : MQTT Not connected, connecting...")
+        interfaces.mqtt.connect("tcp://${mqttServer}:1883", state.deviceName, null, null)
+        MQTT_Initialise()
+        connected = interfaces.mqtt.isConnected()
+    }
+        
+    if (connected){
+        topic = "cmnd/${state.deviceName}/$subTopic"
+        //command = "POWER OFF"
+        logDebug ("Sending MQTT: ${topic} ${command}")
+        // example command cmnd/sonoff_test/POWER on
+        // working interfaces.mqtt.publish("cmnd/Stone_light/POWER", command, 1, true)
+        interfaces.mqtt.publish(topic, command, 1, true)
+    }
+    else {
+        
+        log.error "$device.displayName : still not connecetd"
+        MQTT_Initialise()
+    }
+    
+}
 //action - Sends command to Sonoff
-
+//based on code found here https://community.smartthings.com/t/any-httpget-smatapps-or-code-anywhere/117945/4
 def action(option){
 	def deviceIP = device.deviceNetworkId
 	if (forceIP) {
@@ -215,96 +522,21 @@ def action(option){
     if (password){
 			option += "&user=admin&password=${password}"
 		}
-    logDebug ("Sending command : '${option}' to $device.displayName at IP:${deviceIP}")
+    logDebug ("Sending http command : '${option}' to $device.displayName at IP:${deviceIP}")
     def theAction = new hubitat.device.HubAction("""GET /cm?cmnd=${option} HTTP/1.1\r\n Accept: */*\r\nHOST: ${deviceIP}:80\r\n\r\n""", hubitat.device.Protocol.LAN, "${deviceIP}:80", [callback: calledBackHandler])
 
     sendHubCommand(theAction)
-    
-
 }
 
 void calledBackHandler(hubitat.device.HubResponse hubResponse)
 {
-  //treating data received back from sonoff
-  //when power command used a one line power on or power off is reveived
-  //when status is used then a list of data is receievd, all we are interseted in is the power information
-  //If you want to add more status information then details can be found at https://github.com/arendst/Sonoff-Tasmota/wiki/Commands
-  
-state.status = hubResponse.body 
-logDebug ("responded with '$state.status'")
-def reportedState
-
-      
-      if (state.status == """{"WARNING":"Need user=<username>&password=<password>")""") {
-      		log.error "$device.displayName  password failure"
-            sendEvent(name: "authentication", value: 'FAILED')
-            }
-      else {sendEvent(name: "authentication", value: 'ok')
-      }
-   
-    
-   	if (state.status == """{"POWER":"ON"}""") {
-        reportedState = "on"}
-   else
-      if (state.status == """{"POWER1":"ON"}""") {
-        reportedState = "on"}
-   else 
-   if (state.status == """{"POWER":"OFF"}""") {
-     reportedState = "off"}
-        else 
-   if (state.status == """{"POWER1":"OFF"}""") {
-     reportedState = "off"}
-   else
-   if (state.status == """{"SetOption31":"ON"}""") {
-     logDebug ("$device.displayName LED blink on WiFi error disabled")
-   }   
-   else
-   if (state.status.contains ('Status'))
-   
-   {
-   		def msg = new groovy.json.JsonSlurper().parseText(hubResponse.body)  
-   		def SonoffPower = msg.Status.Power
-        def SonoffFriendlyName = msg.Status.FriendlyName
-        def SonoffUptime = msg.StatusPRM.Uptime
-        def SonoffVersion = msg.StatusFWR.Version
-        def SonoffHostname = msg.StatusNET.Hostname
-        def SonoffIPAddress = msg.StatusNET.IPAddress
-        def SonoffMac = msg.StatusNET.Mac
-        def SonoffLocal = msg.StatusTIM.Local
-        def SonoffSleepMode = msg.StatusSTS.SleepMode
-        def SonoffSleep = msg.StatusSTS.Sleep
-                        
-           
-        sendEvent(name: "FriendlyName", value: "$SonoffFriendlyName")
-   		sendEvent(name: "Uptime", value: "$SonoffUptime")
-        sendEvent(name: "Version", value: "$SonoffVersion")
-        sendEvent(name: "Hostname", value: "$SonoffHostname")
-        sendEvent(name: "Mac", value: "$SonoffMac")
-        sendEvent(name: "ip", value: "$SonoffIPAddress")
-        
-	   if (SonoffPower == 1) {reportedState = "on"}else {reportedState = "off"}
-            logDebug ("updated: FriendlyName:${SonoffFriendlyName} Uptime: ${SonoffUptime} Time: ${SonoffLocal} Version: ${SonoffVersion} HostName: ${SonoffHostname} MAC: ${SonoffMac} SleepMode: ${SonoffSleepMode}")
-        }
-   
-   def currentState = device.currentValue("switch")
-   if (reportedState != currentState){
-	   	logDebug ("currentState = $currentState sending Event $reportedState")
-	   	
-   		sendEvent(name: "switch", value: reportedState)
-	   logInfo ("turned $reportedState")
-	}
-     
-  // sendEvent(name: "refresh", value: "active")
-   
-   
-   
-   def SwitchState = device.currentValue("switch")
-   
-   //if switch state has changed then output to logger
-   if ((SwitchState != currentState) && (SwitchState)) {
-	   logInfo ("turned $SwitchState")
-   }
+ 	//state.status = hubResponse.body 
+    logDebug ("HTTP Received: ${hubResponse.body}")
+    extractFromPayload (hubResponse.body)
+  	
 }
+	
+
 
 def enableDebugLogging (evt) {
 	if (logDebugging){
@@ -314,7 +546,7 @@ def enableDebugLogging (evt) {
 	if (debugDelay) {
 		runIn (1800, debugOff)
 	}
-}
+}				  
 
 def logDebug (text) {
 	if (state.logDebug){
@@ -330,8 +562,13 @@ def debugOff () {
 def logInfo (text) {
 	if (infoLog){
     	log.info "$device.displayName : $text"
-        }
+    }
 }
+    
+def logWarn (text) {
+    log.warn "$device.displayName : $text"
+}  
 
-//all status information can be found here https://github.com/arendst/Sonoff-Tasmota/wiki/Commands
-
+def logError (text) {
+    log.error "$device.displayName : $text"
+}  
