@@ -12,6 +12,10 @@
  *            MQTT protocol added
  *            Sonoff Basic, 2R, 4CH, TH and POW all combined into same driver
  *            General tidy-up
+ *  V3.1    Removed conditional capabilities as not taking preferences into account
+ *          Only sendEvent if raw data from tasmota device is different to hubitat device data
+ *          Corrected bugs in temperature handler
+ *          Added error handling if MQTT parse does not confirm change of switch state in a timley manner
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -24,21 +28,17 @@
  *
  */
 metadata {
-	definition (name: "Tasmota (sonoff)", namespace: "mhutchy", author: "Mark Hutchings", importUrl:"") {
+	definition (
+        name: "Tasmota (sonoff)", 
+        namespace: "mhutchy", 
+        author: "Mark Hutchings", 
+        importUrl:"https://github.com/mhutchy/Hubitat-Drivers/blob/master/Sonoff%20(Tasmota)") {
+        
 		capability "Switch"
-        if (sonoffTH){
-		    capability "Temperature Measurement"
-            capability "Relative Humidity Measurement"
-        }
-        if (sonoffPOW){
-		    capability "Voltage Measurement"
-            capability "Energy Meter"
-        
-        }        
-        
-        
+		capability "Temperature Measurement"
+        capability "Voltage Measurement"
+        capability "Energy Meter"
         capability "Refresh"
-        
         capability "Sensor"
         
         attribute "Version" , "string"
@@ -48,6 +48,9 @@ metadata {
         attribute "maxTempYesterday", "number"
         attribute "minTempYesterday", "number"
         attribute "readingDate", "string"
+        attribute "failure", "bool"
+        attribute "ipAddress", "string"
+        attribute "lastEventTime", "long"
 		
 		command "enableDebugLogging"
 		command "resetMaxMix"
@@ -57,6 +60,7 @@ metadata {
 
 	}
 
+    
  
  preferences {
      
@@ -97,15 +101,11 @@ metadata {
 
 def installed(){
 	logDebug ("$device.displayName installed ${settings}")
-	unschedule()
-    Update()
     initialise()
 }
 
 def updated(){
 	logDebug ("$device.displayName updated ${settings}")
-	unschedule()
-    Update()
     initialise()
 }
 
@@ -114,18 +114,30 @@ def initialise(){
     state.clear()
     unschedule()
     
-    
-    interfaces.mqtt.unsubscribe("stat/$state.deviceName/")
-    
-    
-    
-    
-	if (logDebugging) {
+ 	if (logDebugging) {
 		enableDebugLogging()
 	}
 	else {
 		debugOff ()
-	}
+	}    
+    
+    
+    logDebug ("Forced IP is $forceIP")
+ 	if (forceIP) {
+        logDebug ("Setting IP Address to $forceIP")
+        sendEvent(name: "ipAddress", value: "$forceIP")
+        
+    }
+    else {
+        logDebug ("Setting IP Address to $device.deviceNetworkId")
+        sendEvent(name: "ipAddress", value: "$device.deviceNetworkId")
+    }
+    
+    logDebug ("IP address set to ${device.currentValue"ipAddress"}")
+     
+    interfaces.mqtt.unsubscribe("stat/$state.deviceName/")
+        
+
     
     //build command
     if (multiSwitch){
@@ -136,15 +148,16 @@ def initialise(){
     }
 
     state.deviceName = device.displayName.replaceAll(' ','_') 
-    logDebug ("Setting topic to $state.deviceName (taken from ${device.displayName}")  
+    logDebug ("Setting topic to $state.deviceName (taken from ${device.displayName})")  
 
     if (useMQTT){
-        action ("Backlog%20topic%20${state.deviceName}%3Bmqtthost%20${mqttServer}%3Bhostname%20${state.deviceName}%3Bfriendlyname%20$state.deviceName%3B")
+        action ("Backlog%20topic%20${state.deviceName}%3Bmqtthost%20${mqttServer}%3Bhostname%20${state.deviceName}%3Bfriendlyname%20$state.deviceName%3Bdevicename%20$state.deviceName")
         logDebug ("MQTT enabled")
         MQTT_Initialise()
     }
     else{
         logDebug ("MQTT disabled")
+        action ("Backlog%20topic%20${state.deviceName}%3Bhostname%20${state.deviceName}%3Bfriendlyname%20$state.deviceName%3Bdevicename%20$state.deviceName")
         interfaces.mqtt.disconnect()
         interfaces.mqtt.unsubscribe()
     }
@@ -185,10 +198,18 @@ def MQTT_Initialise(){
     
     logDebug ("MQTT_initialising")
     
+    try { 
+        interfaces.mqtt.connect("tcp://${mqttServer}:1883", state.deviceName, null, null)
+        logDebug ("MQTT connected with Hostname: $state.deviceName")
+        } 
+    catch(Exception e) {
+        logWarn ("Error when trying to connect to tcp://${mqttServer}:1883")
+        logWarn ("$e")
+    }
         
-    interfaces.mqtt.connect("tcp://${mqttServer}:1883", state.deviceName, null, null)
     
-    logDebug ("MQTT connected with Hostname: $state.deviceName")
+    
+    
     //subscribe to POWER for switch status
     topic = "stat/$state.deviceName/" 
 
@@ -209,10 +230,10 @@ def MQTT_Initialise(){
 
 def mqttClientStatus(message){
     if (message.contains ('Error')){
-        logWarn ("Error: $message")
+        logWarn (message)
     }
     else {
-        logInfo ("Client status: $message")
+        logDebug ("Client status: $message")
     }
     
     //checking for connection lost (Error: Connection lost:)
@@ -232,11 +253,21 @@ def parse(message){
 }
 
 def extractFromPayload (payload){
-    
+
+    time = now()
+    sendEvent(name: "lastEventTime", value: time)
+    currentSwitch = device.currentValue("switch")
+    logDebug ("parsing message, time:$time")
+   
     if ((payload == "ON") || (payload == "OFF")){
         payload = payload.toLowerCase()
-        sendEvent(name: "switch", value: payload)
-        logInfo ("switched: ${payload} " ) 
+        if (currentSwitch != payload){
+            sendEvent(name: "switch", value: payload)
+            logInfo ("switched: ${payload} " ) 
+        }
+        else {
+            logDebug ("Did not change state from $payload - no event sent")
+        }
     }
     else {
        
@@ -250,19 +281,25 @@ def extractFromPayload (payload){
             switchStatus = json.POWER
             if (switchStatus){
                 switchStatus = switchStatus.toLowerCase()
-                sendEvent(name: "switch", value: switchStatus)
-                logInfo ("switched: ${switchStatus} " ) 
+                
+                if (currentSwitch != switchStatus){
+                    sendEvent(name: "switch", value: switchStatus)
+                    logInfo ("switched: ${switchStatus} " ) 
+                }
+                else {
+                    logDebug ("Did not change state from $switchStatus - no event sent")
+                }
             }
             else{
                 logDebug ("No valid POWER value found - not switched" ) 
             }
             
         }                
-        
         if (payload.contains('WARNING')){
-            log.warn (payload)
-        }
-           
+            logDebug ("Warning message receieved")
+            logWarn (payload)
+        }        
+        
         //DS18B20 probe
         if (payload.contains('DS18B20')){
             logDebug ("DS18B20 temperature found")
@@ -318,17 +355,30 @@ def extractFromPayload (payload){
     }
 }
 
+
 def updateTemperature (temperatureRaw, unit){
     
     if (TOffset) {
-        logDebug ("$device.displayName - adding offset of ${TOffset}C to reading of ${temperatureRaw}${unit}")
+        logDebug ("Adding offset of ${TOffset}C to reading of ${temperatureRaw}${unit}")
         temperature = (temperatureRaw as float) + TOffset
-        temperature = temperature.trunc(1)
-		}
+    }
+    else {
+        temperature = temperatureRaw as float
+        logDebug ("No offset to reading of ${temperatureRaw}${unit}")    
+    }
     
-    sendEvent(name: "temperature", value: temperature)
+       
+    if ((temperature as float) == (device.currentTemperature as float)){
+        logDebug ("Temperature unchanged from ${device.currentTemperature}")
+    }
     
-    logInfo ("Temperature: ${temperatureRaw}${unit}")
+    else {
+        logDebug ("Temperature changed from ${device.currentTemperature} to $temperature")
+        sendEvent(name: "temperature", value: temperature)
+        logInfo ("Temperature: ${temperature}${unit}")
+    }
+    
+    
     if (device.currentMaxTempToday == null){
         logDebug ("$device.displayName No max temp currently set")
         sendEvent (name: "maxTempToday", value: temperature)
@@ -368,7 +418,7 @@ def updateTemperature (temperatureRaw, unit){
     state.dayLast = day
 	
 }
-    
+        
 
 def Update(evt){
 	logDebug ("$device.displayName refreshing status via HTTP")
@@ -381,7 +431,7 @@ def refresh() {
     logDebug ("$device.displayName $device.deviceNetworkId refreshing")
     
     if (useMQTT){
-        mqttAction("POWER$switchNo"," ")
+        mqttAction("POWER"," ")
         if (sonoffTH || sonoffPOW){
             mqttAction("STATUS","10")
         }
@@ -432,13 +482,13 @@ def off() {
 def switchCommand (command){
     //handler to opperate switch
     logDebug ("Switching $command")
-    if (device.currentSwitch == command){
-        logDebug ("device already showing as $command setting to null")
-        sendEvent(name: "switch", value: 0) 
-    }
+    
+
     if (useMQTT){
         mqttAction("${state.powerCommand}",command)
-        runIn(2, 'checkSwitched', [data: command])
+        timeNow = now()
+        runIn(2, 'checkSwitched', [data: [command, timeNow]])
+       
     }
     else {
         action ("${state.powerCommand}%20$command")
@@ -446,14 +496,45 @@ def switchCommand (command){
     }
 }
 
-def checkSwitched (command){
-    if (!state.failCount){state.failCount = 0}
-    
-    maxFailures = 5
+def checkSwitched (command, commandTime){
     //Handler to check that the device has correctly responded to switch command
+    
+    //handler parameters
+    timeout = 2000   // how long to wait for a reply before counting a failure
+    maxFailures = 5  // How many retries allowed
+    
+    
+    
+    if (!state.failCount){state.failCount = 0}
+
+    //Working out if response received in a timely manner
+    
+    timeOk = 0
+    if (device.currentValue("lastEventTime")){
+        timeLast = device.currentValue("lastEventTime") as long
+            }
+    else {
+        logDebug ("No last event time recorded, setting to 0")
+        timeLast = 0
+    }
+    timeToRespond = timeLast - commandTime
+    logDebug ("command was sent at $commandTime, responce received at $timeLast taking ${timeToRespond}ms")
+   
+    if (timeToRespond < timeout){
+        logDebug ("Response time ok")
+        timeOk = 1
+    }
+    else {
+        logWarn ("Response timed out")
+        timeOk = 0
+    }
+    
+    
+    
+    
     logDebug ("Checking device switched command:${command} switch:${device.currentSwitch}")
     
-    if (device.currentSwitch == command){
+    if ((device.currentSwitch == command) && (timeOk == 1)){
         logDebug ("Correctly switched $command")
         state.failCount = 0
         sendEvent(name: "failure", value: 0)  
@@ -465,6 +546,7 @@ def checkSwitched (command){
             logError ("Failed to switch $state.failCount times")
             sendEvent(name: "failure", value: 1)  
             state.failCount = 0
+            initialise () 
         }
         else {
             logDebug ("Re-Initialsing MQTT")
@@ -489,7 +571,7 @@ def mqttAction(subTopic, command){
     
     connected = interfaces.mqtt.isConnected()
     if (!connected){
-        logWarn ("$device.displayName : MQTT Not connected, connecting...")
+        logWarn ("MQTT Not connected, connecting...")
         interfaces.mqtt.connect("tcp://${mqttServer}:1883", state.deviceName, null, null)
         MQTT_Initialise()
         connected = interfaces.mqtt.isConnected()
@@ -513,10 +595,10 @@ def mqttAction(subTopic, command){
 //action - Sends command to Sonoff
 //based on code found here https://community.smartthings.com/t/any-httpget-smatapps-or-code-anywhere/117945/4
 def action(option){
-	def deviceIP = device.deviceNetworkId
-	if (forceIP) {
-		deviceIP = forceIP
-	}
+
+	deviceIP = device.currentValue("ipAddress")
+    logDebug ("Using IP address $deviceIP")
+
     //add password if not blank
     if (password){
 			option += "&user=admin&password=${password}"
@@ -565,6 +647,7 @@ def logInfo (text) {
 }
     
 def logWarn (text) {
+    logDebug ("Warning message received")
     log.warn "$device.displayName : $text"
 }  
 
