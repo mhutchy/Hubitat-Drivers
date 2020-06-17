@@ -4,7 +4,10 @@
  *  Copyright 2020 Mark Hutchings
  *
  * 	V0.1 Beta		
- *
+ *  
+ *  This script sends the TTS information via MQTT to the receiving device which needs to be running
+ *  this python script to send the TTS mp3 to the local speakers
+ *       Script: https://github.com/mhutchy/Python/blob/master/MQTT%20TTS%20to%20speaker
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  *  in compliance with the License. You may obtain a copy of the License at:
@@ -26,14 +29,10 @@ metadata {
         capability "SpeechSynthesis"
         capability "Refresh"
         capability "Initialize"
-   
-
+ 
         command "enableDebugLogging"
 
 	}
-
-    
- 
  preferences {
      
 	 input "disabled", "bool", title: "Disable driver"
@@ -51,9 +50,6 @@ metadata {
 
          }
 }
-
-
-
 
 def installed(){
 	logDebug ("$device.displayName installed ${settings}")
