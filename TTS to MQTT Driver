@@ -1,0 +1,194 @@
+/**
+ *  TTS
+ *
+ *  Copyright 2020 Mark Hutchings
+ *
+ * 	V0.1 Beta		
+ *
+ *
+ *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
+ *  in compliance with the License. You may obtain a copy of the License at:
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ *  Unless required by applicable law or agreed to in writing, software distributed under the License is distributed
+ *  on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the License
+ *  for the specific language governing permissions and limitations under the License.
+ *
+ */
+metadata {
+	definition (
+        name: "TTS via MQTT", 
+        namespace: "mhutchy", 
+        author: "Mark Hutchings", 
+        importUrl:"https://github.com/mhutchy/") {
+        
+        capability "SpeechSynthesis"
+        capability "Refresh"
+        capability "Initialize"
+   
+
+        command "enableDebugLogging"
+
+	}
+
+    
+ 
+ preferences {
+     
+	 input "disabled", "bool", title: "Disable driver"
+    
+     input "logDebugging", "bool", title: "Enable debug logging", displayDuringSetup: true, required: true, defaultValue: true
+	 input "debugDelay", "bool", title: "Disable debug logging after 30m", displayDuringSetup: true, defaultValue: true, required: true
+	 input "infoLog", "bool", title: "Enable info logging", displayDuringSetup: true, required: true, defaultValue: true
+     
+     input "voice", "enum", title: "Voice to be used", options:["Amy(UK)","Emma(UK)","Brian(UK)","Celine(FR)","Léa(FR)","Mathieu(FR)","Aditi(IN)"], defaultValue: "Amy"
+
+     input "pauseLength", "int", title: "Add x extra seconds to end of MP3", description: "Some players like omxplayer cut off the last couple of seconds of the MP3, adding a pause here gets around this issue", defaultValue: 0
+     
+     input "MQTT_Browser","string", title: "IP Address of MQTT browser", displayDuringSetup: true, required: true
+     input "MQTT_Topic","string", title: "MQTT Topic", displayDuringSetup: true, required: true, defaultValue: "hubitatTTS"
+
+         }
+}
+
+
+
+
+def installed(){
+	logDebug ("$device.displayName installed ${settings}")
+    initialize()
+}
+
+def updated(){
+	logDebug ("$device.displayName updated ${settings}")
+    initialize()
+}
+
+
+def initialize(){
+	log.debug "$device.displayName initialising ${settings}"
+    state.clear()
+    unschedule()
+    state.deviceName = device.displayName.replaceAll(' ','_') 
+    
+ 	if (logDebugging) {
+		enableDebugLogging()
+	}
+	else {
+		debugOff ()
+	}    
+    
+    MQTT_Initialise()
+  
+}	
+
+
+def MQTT_Initialise(){
+    
+    logDebug ("MQTT_initialising")
+    
+    
+    try { 
+        interfaces.mqtt.connect("tcp://${MQTT_Browser}:1883", state.deviceName, null, null)
+        logDebug ("MQTT connected to ${MQTT_Browser} with Hostname: $state.deviceName")
+        } 
+    catch(Exception e) {
+        logWarn ("Error when trying to connect to ${MQTT_Browser}:1883")
+        logWarn ("$e")
+    }
+}
+
+def mqttClientStatus(message){
+    if (message.contains ('Error')){
+        logWarn (message)
+    }
+    else {
+        logInfo ("Client status: $message")
+    }
+}
+
+def speak(evt){
+    logDebug("speak handler: $evt")
+    
+    message = "$evt"
+    if (pauseLength >0){
+        logDebug ("Adding ${pauseLength}s pause to end of mp3")
+        message = "$evt" +"<break time='${pauseLength}s'/> ."
+    }
+    
+    voiceIndex = voice.indexOf('(')
+    TTS_Voice = voice[0..(voiceIndex -1)]
+    
+    
+    logDebug ("TTS: voice: ${TTS_Voice}, message: $message")
+    
+    ttsMap = textToSpeech(message, voice = TTS_Voice)
+    logDebug ("Map: $ttsMap")
+   
+    mp3Url = ttsMap["uri"]
+
+
+    mqttAction(mp3Url)
+}
+
+def mqttAction(mpsUrl){
+    
+    connected = interfaces.mqtt.isConnected()
+    if (!connected){
+        logWarn ("MQTT Not connected, connecting...")
+        MQTT_Initialise()
+        connected = interfaces.mqtt.isConnected()
+    }
+        
+    if (connected){
+
+        logDebug ("Sending MQTT: ${MQTT_Topic} ${mpsUrl}")
+        // example command cmnd/sonoff_test/POWER on
+        // working interfaces.mqtt.publish("cmnd/Stone_light/POWER", command, 1, true)
+        interfaces.mqtt.publish(MQTT_Topic, mpsUrl, 1, true)
+    }
+    else {
+        
+        log.error "$device.displayName : still not connecetd"
+        MQTT_Initialise()
+    }
+    
+}
+
+
+
+def enableDebugLogging (evt) {
+	if (logDebugging){
+		state.logDebug = 1
+		logDebug ("Switching on debug logging")
+	}
+	if (debugDelay) {
+		runIn (1800, debugOff)
+	}
+}				  
+
+def logDebug (text) {
+	if (state.logDebug){
+		log.debug "$device.displayName : $text"
+	}
+}
+
+def debugOff () {
+	logDebug ("Switching off debug logging")
+	state.logDebug = 0
+}
+
+def logInfo (text) {
+	if (infoLog){
+    	log.info "$device.displayName : $text"
+    }
+}
+    
+def logWarn (text) {
+    log.warn "$device.displayName : $text"
+}  
+
+def logError (text) {
+    log.error "$device.displayName : $text"
+}  
